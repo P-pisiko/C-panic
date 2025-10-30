@@ -18,6 +18,16 @@ void AddLog(const wchar_t *fmt, ...) {
     InvalidateRect(g_hwnd, NULL, TRUE); //redraw call
 }
 
+void CursorToCenter() {
+    int x = GetSystemMetrics(SM_CXSCREEN) / 2;
+    int y = GetSystemMetrics(SM_CYSCREEN) / 2;
+    SetCursorPos(x,y);
+}
+
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam){
+    return 1;
+}
+
 DWORD WINAPI LoggerThread(LPVOID lp) {
     for(int i = 0; i < 100; i++) {
         AddLog(L"Test line -> %d",i);
@@ -46,6 +56,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (wParam == VK_ESCAPE)
                 PostQuitMessage(0);
             break;
+
+        case WM_TIMER:
+            CursorToCenter();
+            break;
+
         default:
             return DefWindowProc(hwnd, msg, wParam, lParam);
     }
@@ -65,9 +80,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         L"TTYWindow", L"TTY Emulation",
         WS_POPUP,
         0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
-        NULL, NULL, hInstance, NULL);
+        NULL, NULL, hInstance, NULL
+    );
+    SetTimer(g_hwnd, 1, 10, NULL);
+        
 
     ShowWindow(g_hwnd, SW_SHOW);
+    ShowCursor(TRUE);
     
     AddLog(L"[+] Panic screen initialized");
     AddLog(L"[+] Checking USB ports...");
