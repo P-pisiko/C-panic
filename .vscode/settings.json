@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "usbiodef.h": "c",
+        "initguid.h": "c",
+        "cfgmgr32.h": "c"
+    }
+}
