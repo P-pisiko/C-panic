@@ -1,5 +1,16 @@
 #include <windows.h>
+#include <cfgmgr32.h>
+#include <setupapi.h>
+#include <initguid.h>
+#include <usbiodef.h>
 #include <stdio.h>
+
+#pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "cfgmgr32.lib")
+
+#ifndef CM_DEVCAP_EJECTIONSUPPORTED
+#define CM_DEVCAP_EJECTIONSUPPORTED 0x00000020
+#endif
 
 
 static wchar_t logBuffer[4096] = L""; 
@@ -18,8 +29,7 @@ void AddLog(const wchar_t *fmt, ...) {
     InvalidateRect(g_hwnd, NULL, TRUE); //redraw call
 }
 
-BOOL Shutdown(BOOL bReboot)
-{
+BOOL Shutdown(BOOL bReboot) {
 	HANDLE hToken;
 	TOKEN_PRIVILEGES tkp;
 
@@ -62,8 +72,111 @@ DWORD WINAPI LoggerThread(LPVOID lp) {
     }
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-{
+BOOL EjectDevice(DEVINST devInst) {
+    DEVINST parentDevInst = devInst;
+    DEVINST currentDevInst = devInst;
+    DWORD capabilities = 0;
+    ULONG size = sizeof(capabilities);
+    BOOL foundEjectable = FALSE;
+    
+    // Walking up device tree to find an ejectable parent
+    for (int level = 0; level < 10; level++) {
+        capabilities = 0;
+        size = sizeof(capabilities);
+        
+        if (CM_Get_DevNode_Registry_Property(currentDevInst, CM_DRP_CAPABILITIES,
+            NULL, &capabilities, &size, 0) == CR_SUCCESS) {
+            
+            if (capabilities & CM_DEVCAP_EJECTIONSUPPORTED) {
+                AddLog("[INFO] Found ejectable device at level %d\n", level);
+                parentDevInst = currentDevInst;
+                foundEjectable = TRUE;
+                break;
+            }
+        }
+        
+        DWORD removable = 0;
+        size = sizeof(removable);
+        if (CM_Get_DevNode_Registry_Property(currentDevInst, CM_DRP_REMOVAL_POLICY,
+            NULL, &removable, &size, 0) == CR_SUCCESS) { //CM_REMOVAL_POLICY_EXPECT_SURPRISE_REMOVAL 2 / 3 is removable
+            if (removable == 2 || removable == 3) {
+                AddLog("[INFO] Found removable device at level %d (policy: %d)\n", level, removable);
+                parentDevInst = currentDevInst;
+                foundEjectable = TRUE;
+                break;
+            }
+        }
+
+        DEVINST tempDevInst;
+        if (CM_Get_Parent(&tempDevInst, currentDevInst, 0) != CR_SUCCESS) { // Move to parent
+            break;
+        }
+        currentDevInst = tempDevInst;
+    }
+    
+    if (!foundEjectable) {
+        AddLog("[INFO] No ejectable/removable device found in hierarchy\n");
+        return FALSE;
+    }
+    
+    PNP_VETO_TYPE vetoType;
+    WCHAR vetoName[MAX_PATH];
+    
+    AddLog("[INFO] Attempting to eject device...\n");
+    CONFIGRET result = CM_Request_Device_Eject(parentDevInst, &vetoType, 
+        vetoName, MAX_PATH, 0);
+    
+    if (result == CR_SUCCESS) {
+        AddLog("[SUCCESS] Device ejected successfully!\n");
+        return TRUE;
+    } else {
+        AddLog("[FAILED] Ejection failed with error code: 0x%X\n", result);
+        if (vetoType != PNP_VetoTypeUnknown) {
+            Addlog("[VETO] Veto Type: %d, Veto Name: %ws\n", vetoType, vetoName);
+        }
+        return FALSE;
+    }
+}
+
+void EnumerateUSBDevices() {
+    HDEVINFO deviceInfoSet;
+    SP_DEVINFO_DATA deviceInfoData;
+    DWORD i;
+    
+    // Get all USB devices
+    deviceInfoSet = SetupDiGetClassDevs(&GUID_DEVINTERFACE_USB_DEVICE,
+        NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    
+    if (deviceInfoSet == INVALID_HANDLE_VALUE) {
+        AddLog("Failed to get device information set\n");
+        return;
+    }
+    
+    deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
+
+    for (i = 0; SetupDiEnumDeviceInfo(deviceInfoSet, i, &deviceInfoData); i++) { // information about that device
+        WCHAR deviceDesc[256];
+        DWORD dataType;
+        WCHAR devicePath[256];
+        if (SetupDiGetDeviceInstanceId(deviceInfoSet, &deviceInfoData, devicePath, sizeof(devicePath) / sizeof(WCHAR), NULL))
+        {
+            AddLog("Instance ID: %ws\n", devicePath);
+        }
+
+        if (SetupDiGetDeviceRegistryProperty(deviceInfoSet, &deviceInfoData,
+            SPDRP_DEVICEDESC, &dataType, (BYTE*)deviceDesc, 
+            sizeof(deviceDesc), NULL)) {
+
+            AddLog("[Device %d] %ws\n", i + 1, deviceDesc);
+
+            EjectDevice(deviceInfoData.DevInst);
+        }
+    }
+    
+    SetupDiDestroyDeviceInfoList(deviceInfoSet); //Long ass function name
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg){
         case WM_PAINT:
         {
@@ -116,10 +229,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
     ShowWindow(g_hwnd, SW_SHOW);
     ShowCursor(FALSE);
 
-    AddLog(L"[+] Panic screen initialized");
+    /*AddLog(L"[+] Panic screen initialized");
     AddLog(L"[+] Checking USB ports...");
-    AddLog(L"[!] System locked");
-    CreateThread(NULL, 0, LoggerThread, NULL, 0, NULL);
+    AddLog(L"[!] System locked");*/
+    CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
     
 
     MSG msg;
@@ -127,6 +240,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-
+    
     return 0;
 }
