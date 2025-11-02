@@ -24,7 +24,7 @@ void AddLog(const wchar_t *fmt, ...) {
     va_end(args);
 
     wcscat(logBuffer, buffer);
-    wcscat(logBuffer, L"\n");
+    //wcscat(logBuffer, L"\n");
 
     InvalidateRect(g_hwnd, NULL, TRUE); //redraw call
 }
@@ -88,7 +88,7 @@ BOOL EjectDevice(DEVINST devInst) {
             NULL, &capabilities, &size, 0) == CR_SUCCESS) {
             
             if (capabilities & CM_DEVCAP_EJECTIONSUPPORTED) {
-                AddLog("[INFO] Found ejectable device at level %d\n", level);
+                AddLog(L"[INFO] Found ejectable device at level %d\n", level);
                 parentDevInst = currentDevInst;
                 foundEjectable = TRUE;
                 break;
@@ -100,7 +100,7 @@ BOOL EjectDevice(DEVINST devInst) {
         if (CM_Get_DevNode_Registry_Property(currentDevInst, CM_DRP_REMOVAL_POLICY,
             NULL, &removable, &size, 0) == CR_SUCCESS) { //CM_REMOVAL_POLICY_EXPECT_SURPRISE_REMOVAL 2 / 3 is removable
             if (removable == 2 || removable == 3) {
-                AddLog("[INFO] Found removable device at level %d (policy: %d)\n", level, removable);
+                AddLog(L"[INFO] Found removable device at level %d (policy: %d)\n", level, removable);
                 parentDevInst = currentDevInst;
                 foundEjectable = TRUE;
                 break;
@@ -115,30 +115,30 @@ BOOL EjectDevice(DEVINST devInst) {
     }
     
     if (!foundEjectable) {
-        AddLog("[INFO] No ejectable/removable device found in hierarchy\n");
+        AddLog(L"[INFO] No ejectable/removable device found in hierarchy\n");
         return FALSE;
     }
     
     PNP_VETO_TYPE vetoType;
     WCHAR vetoName[MAX_PATH];
     
-    AddLog("[INFO] Attempting to eject device...\n");
+    AddLog(L"[INFO] Attempting to eject device...\n");
     CONFIGRET result = CM_Request_Device_Eject(parentDevInst, &vetoType, 
         vetoName, MAX_PATH, 0);
     
     if (result == CR_SUCCESS) {
-        AddLog("[SUCCESS] Device ejected successfully!\n");
+        AddLog(L"[SUCCESS] Device ejected successfully!\n");
         return TRUE;
     } else {
-        AddLog("[FAILED] Ejection failed with error code: 0x%X\n", result);
+        AddLog(L"[FAILED] Ejection failed with error code: 0x%X\n", result);
         if (vetoType != PNP_VetoTypeUnknown) {
-            Addlog("[VETO] Veto Type: %d, Veto Name: %ws\n", vetoType, vetoName);
+            AddLog(L"[VETO] Veto Type: %d, Veto Name: %ws\n", vetoType, vetoName);
         }
         return FALSE;
     }
 }
 
-void EnumerateUSBDevices() {
+DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
     HDEVINFO deviceInfoSet;
     SP_DEVINFO_DATA deviceInfoData;
     DWORD i;
@@ -148,8 +148,8 @@ void EnumerateUSBDevices() {
         NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
     
     if (deviceInfoSet == INVALID_HANDLE_VALUE) {
-        AddLog("Failed to get device information set\n");
-        return;
+        AddLog(L"Failed to get device information set\n");
+        return FALSE;
     }
     
     deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
@@ -158,16 +158,12 @@ void EnumerateUSBDevices() {
         WCHAR deviceDesc[256];
         DWORD dataType;
         WCHAR devicePath[256];
-        if (SetupDiGetDeviceInstanceId(deviceInfoSet, &deviceInfoData, devicePath, sizeof(devicePath) / sizeof(WCHAR), NULL))
-        {
-            AddLog("Instance ID: %ws\n", devicePath);
-        }
 
         if (SetupDiGetDeviceRegistryProperty(deviceInfoSet, &deviceInfoData,
             SPDRP_DEVICEDESC, &dataType, (BYTE*)deviceDesc, 
             sizeof(deviceDesc), NULL)) {
 
-            AddLog("[Device %d] %ws\n", i + 1, deviceDesc);
+            AddLog(L"[Device %d] %ws\n", i + 1, deviceDesc);
 
             EjectDevice(deviceInfoData.DevInst);
         }

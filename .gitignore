@@ -1,3 +1,5 @@
 *.exe
 eject.c
 *.old
+/builds
+/tests
