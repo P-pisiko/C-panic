@@ -12,9 +12,10 @@
 #define CM_DEVCAP_EJECTIONSUPPORTED 0x00000020
 #endif
 
-
-static wchar_t logBuffer[4096] = L""; 
 static HWND g_hwnd = NULL;
+static HHOOK g_mouseHook = NULL;
+static HHOOK g_keyboardHook = NULL;
+static wchar_t logBuffer[4096] = L""; 
 
 void AddLog(const wchar_t *fmt, ...) {
     wchar_t buffer[512];
@@ -143,11 +144,25 @@ DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
 }
 
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    return 1;
+    if (nCode >= 0) {
+        // Return 1 to block mouse
+        return 1;
+    }
+    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    return 1;
+    if (nCode >= 0) {
+        // Allow only ESC key to pass through 
+        KBDLLHOOKSTRUCT* kbStruct = (KBDLLHOOKSTRUCT*)lParam;
+        if (kbStruct->vkCode == VK_ESCAPE) {
+            //WM_KEYDOWN in WndProc handles it
+            return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
+        }
+        return 1;
+    }
+    return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
 }
 
 BOOL Shutdown(BOOL reboot) {
@@ -195,6 +210,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE)
+                if (g_mouseHook) UnhookWindowsHookEx(g_mouseHook);
+                if (g_keyboardHook) UnhookWindowsHookEx(g_keyboardHook);
                 PostQuitMessage(0);
             break;
 
@@ -224,16 +241,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         NULL, NULL, hInstance, NULL
     );
 
+    //Hooks to block inputs
+    g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, hInstance, 0);
+    g_keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
+    
+    if (g_keyboardHook == NULL) {
+        AddLog(L" [Warning] Failed to set keyboard hook!\n");
+    }
+    if (g_mouseHook == NULL) {
+        AddLog(L" [Warning] Failed to set mouse hook!\n");
+    }   
+
     SetTimer(g_hwnd, 1, 10, NULL); // Timer for the cursor center lock
 
     ShowWindow(g_hwnd, SW_SHOW);
-    ShowCursor(FALSE);
+    ShowCursor(TRUE);
 
-    /*AddLog(L"[+] Panic screen initialized");
-    AddLog(L"[+] Checking USB ports...");
-    AddLog(L"[!] System locked");*/
-    //CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
-    
+    CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
