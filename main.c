@@ -149,7 +149,6 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
         return 1;
     }
     return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
-
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -255,7 +254,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
     SetTimer(g_hwnd, 1, 10, NULL); // Timer for the cursor center lock
 
     ShowWindow(g_hwnd, SW_SHOW);
-    ShowCursor(TRUE);
+    ShowCursor(FALSE);
 
     CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
 
