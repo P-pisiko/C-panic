@@ -4,9 +4,11 @@
 #include <initguid.h>
 #include <usbiodef.h>
 #include <stdio.h>
+#include <dbt.h>
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
+#pragma comment(lib, "user32.lib")
 
 #ifndef CM_DEVCAP_EJECTIONSUPPORTED
 #define CM_DEVCAP_EJECTIONSUPPORTED 0x00000020
@@ -16,18 +18,52 @@ static HWND g_hwnd = NULL;
 static HHOOK g_mouseHook = NULL;
 static HHOOK g_keyboardHook = NULL;
 static wchar_t logBuffer[4096] = L""; 
+static BOOL g_lockdownActive = FALSE;
+static HDEVNOTIFY g_hDevNotify = NULL;
+
+// Whitelist structure
+typedef struct {
+    WORD vendorId;
+    WORD productId;
+    WCHAR description[128];
+} WhitelistEntry;
+
+// Add your trusted devices here
+WhitelistEntry g_whitelist[] = {
+    {0x046D, 0xC52B, L"Logitech Mouse"},
+    {0x13FE, 0x4300, L"Moster USB"},
+    {0x0781, 0x5583, L"SanDisk USB Drive"},
+};
+
+#define WHITELIST_SIZE (sizeof(g_whitelist) / sizeof(WhitelistEntry))
 
 void AddLog(const wchar_t *fmt, ...) {
     wchar_t buffer[512];
     va_list args;
-    va_start(args, fmt); //Formatting stuff here
+    va_start(args, fmt);
     vswprintf(buffer, 512, fmt, args);
     va_end(args);
 
     wcscat(logBuffer, buffer);
-    //wcscat(logBuffer, L"\n");
+    InvalidateRect(g_hwnd, NULL, TRUE);
+}
 
-    InvalidateRect(g_hwnd, NULL, TRUE); //redraw call
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        return 1;
+    }
+    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+}
+
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        KBDLLHOOKSTRUCT* kbStruct = (KBDLLHOOKSTRUCT*)lParam;
+        if (kbStruct->vkCode == VK_ESCAPE) {
+            return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
+        }
+        return 1;
+    }
+    return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
 }
 
 void CursorToCenter() {
@@ -36,11 +72,29 @@ void CursorToCenter() {
     SetCursorPos(x,y);
 }
 
-DWORD WINAPI LoggerThread(LPVOID lp) {
-    for(int i = 0; i < 100; i++) {
-        AddLog(L"Test line -> %d",i);
-        Sleep(101);
+// Extract VID and PID from device path
+BOOL GetDeviceVIDPID(WCHAR* devicePath, WORD* vid, WORD* pid) {
+    WCHAR* vidPos = wcsstr(devicePath, L"VID_");
+    WCHAR* pidPos = wcsstr(devicePath, L"PID_");
+    
+    if (vidPos && pidPos) {
+        *vid = (WORD)wcstol(vidPos + 4, NULL, 16);
+        *pid = (WORD)wcstol(pidPos + 4, NULL, 16);
+        return TRUE;
     }
+    return FALSE;
+}
+
+// Check if device is whitelisted
+BOOL IsDeviceWhitelisted(WORD vid, WORD pid) {
+    for (int i = 0; i < WHITELIST_SIZE; i++) {
+        if (g_whitelist[i].vendorId == vid && g_whitelist[i].productId == pid) {
+            AddLog(L"[OK] Authorized device: %ws (VID:0x%04X PID:0x%04X)\n", 
+                   g_whitelist[i].description, vid, pid);
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 BOOL EjectDevice(DEVINST devInst) {
@@ -50,7 +104,6 @@ BOOL EjectDevice(DEVINST devInst) {
     ULONG size = sizeof(capabilities);
     BOOL foundEjectable = FALSE;
     
-    // Walking up device tree to find an ejectable parent
     for (int level = 0; level < 10; level++) {
         capabilities = 0;
         size = sizeof(capabilities);
@@ -69,7 +122,7 @@ BOOL EjectDevice(DEVINST devInst) {
         DWORD removable = 0;
         size = sizeof(removable);
         if (CM_Get_DevNode_Registry_Property(currentDevInst, CM_DRP_REMOVAL_POLICY,
-            NULL, &removable, &size, 0) == CR_SUCCESS) { //CM_REMOVAL_POLICY_EXPECT_SURPRISE_REMOVAL 2 / 3 is removable
+            NULL, &removable, &size, 0) == CR_SUCCESS) {
             if (removable == 2 || removable == 3) {
                 AddLog(L"[INFO] Found removable device at level %d (policy: %d)\n", level, removable);
                 parentDevInst = currentDevInst;
@@ -79,7 +132,7 @@ BOOL EjectDevice(DEVINST devInst) {
         }
 
         DEVINST tempDevInst;
-        if (CM_Get_Parent(&tempDevInst, currentDevInst, 0) != CR_SUCCESS) { // Move to parent
+        if (CM_Get_Parent(&tempDevInst, currentDevInst, 0) != CR_SUCCESS) {
             break;
         }
         currentDevInst = tempDevInst;
@@ -143,55 +196,94 @@ DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
     SetupDiDestroyDeviceInfoList(deviceInfoSet); //Long ass function name
 }
 
-LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode >= 0) {
-        // Return 1 to block mouse
-        return 1;
+void ActivateLockdown() {
+    if (g_lockdownActive) return;
+    
+    g_lockdownActive = TRUE;
+    
+    // Show fullscreen window
+    ShowWindow(g_hwnd, SW_SHOW);
+    SetForegroundWindow(g_hwnd);
+    ShowCursor(FALSE);
+    
+    // Activate hooks
+    if (!g_mouseHook) {
+        g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, GetModuleHandle(NULL), 0);
     }
-    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+    if (!g_keyboardHook) {
+        g_keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
+    }
+    
+    SetTimer(g_hwnd, 1, 10, NULL);
+    
 }
 
-LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode >= 0) {
-        // Allow only ESC key to pass through 
-        KBDLLHOOKSTRUCT* kbStruct = (KBDLLHOOKSTRUCT*)lParam;
-        if (kbStruct->vkCode == VK_ESCAPE) {
-            //WM_KEYDOWN in WndProc handles it
-            return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
-        }
-        return 1;
+void HandleUnauthorizedDevice(WCHAR* devicePath, WORD vid, WORD pid) {
+    AddLog(L"\n[ALERT] UNAUTHORIZED DEVICE!\n");
+    AddLog(L"Device Path: %ws\n", devicePath);
+    AddLog(L"VID: 0x%04X, PID: 0x%04X\n", vid, pid);
+
+    Sleep(200);
+    EnumerateUSBDevices(NULL);
+    
+    ActivateLockdown();
+}
+
+void ProcessNewDevice(WCHAR* devicePath) {
+    WORD vid = 0, pid = 0;
+    
+    AddLog(L"\n[DETECT] New USB device connected\n");
+    
+    if (!GetDeviceVIDPID(devicePath, &vid, &pid)) {
+        AddLog(L"[WARN] Could not extract VID/PID\n");
+        return;
     }
-    return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
+    
+    AddLog(L"VID: 0x%04X, PID: 0x%04X\n", vid, pid);
+    
+    if (!IsDeviceWhitelisted(vid, pid)) {
+        HandleUnauthorizedDevice(devicePath, vid, pid);
+    }
 }
 
 BOOL Shutdown(BOOL reboot) {
-	HANDLE hToken;
-	TOKEN_PRIVILEGES tkp;
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tkp;
 
-	if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
-		return FALSE;
+    if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return FALSE;
 
-	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+    LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
 
-	tkp.PrivilegeCount = 1;
-	tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    tkp.PrivilegeCount = 1;
+    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-	// need to adjust privileges to allow user to shutdown
-	if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
-		return FALSE;
+    if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
+        return FALSE;
 
-	if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, reboot))
-		return FALSE;
+    if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, reboot))
+        return FALSE;
 
-	tkp.Privileges[0].Attributes = 0;
+    tkp.Privileges[0].Attributes = 0;
+    AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
 
-	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
-
-	return TRUE;
+    return TRUE;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg){
+        case WM_DEVICECHANGE:
+            if (wParam == DBT_DEVICEARRIVAL) {
+                PDEV_BROADCAST_HDR pHdr = (PDEV_BROADCAST_HDR)lParam;
+                
+                if (pHdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+                    PDEV_BROADCAST_DEVICEINTERFACE pDevInf = 
+                        (PDEV_BROADCAST_DEVICEINTERFACE)pHdr;
+                    ProcessNewDevice(pDevInf->dbcc_name);
+                }
+            }
+            break;
+            
         case WM_PAINT:
         {
             PAINTSTRUCT ps;
@@ -208,14 +300,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE)
+            if (wParam == VK_ESCAPE) {
                 if (g_mouseHook) UnhookWindowsHookEx(g_mouseHook);
                 if (g_keyboardHook) UnhookWindowsHookEx(g_keyboardHook);
+                if (g_hDevNotify) UnregisterDeviceNotification(g_hDevNotify);
                 PostQuitMessage(0);
+            }
             break;
 
         case WM_TIMER:
-            CursorToCenter();
+            if (g_lockdownActive) {
+                CursorToCenter();
+            }
             break;
 
         default:
@@ -232,32 +328,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
     wc.lpszClassName = L"TTYWindow";
     RegisterClassW(&wc);
 
-    g_hwnd  = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, // always on top, no taskbar icon
+    g_hwnd = CreateWindowEx(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         L"TTYWindow", L"TTY Emulation",
         WS_POPUP,
         0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
         NULL, NULL, hInstance, NULL
     );
 
-    //Hooks to block inputs
-    g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, hInstance, 0);
-    g_keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
+    // Register for USB device notifications
+    DEV_BROADCAST_DEVICEINTERFACE notificationFilter = {0};
+    notificationFilter.dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE);
+    notificationFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+    notificationFilter.dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;
     
-    if (g_keyboardHook == NULL) {
-        AddLog(L" [Warning] Failed to set keyboard hook!\n");
+    g_hDevNotify = RegisterDeviceNotification(g_hwnd, &notificationFilter,
+                                             DEVICE_NOTIFY_WINDOW_HANDLE);
+    
+    if (!g_hDevNotify) {
+        MessageBox(NULL, L"Failed to register device notification!", L"Error", MB_OK);
+        return 1;
     }
-    if (g_mouseHook == NULL) {
-        AddLog(L" [Warning] Failed to set mouse hook!\n");
-    }   
 
-    SetTimer(g_hwnd, 1, 10, NULL); // Timer for the cursor center lock
+    //AddLog(L"USB Security Monitor Active\n");
+    AddLog(L"Monitoring %d whitelisted devices...\n\n", WHITELIST_SIZE);
 
-    ShowWindow(g_hwnd, SW_SHOW);
-    ShowCursor(FALSE);
-
-    CreateThread(NULL, 0, EnumerateUSBDevices, NULL, 0, NULL);
-
+    // Don't show window or activate hooks until unauthorized device is detected
+    // ShowWindow(g_hwnd, SW_HIDE);
+    
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
