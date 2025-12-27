@@ -19,6 +19,7 @@ static HHOOK g_mouseHook = NULL;
 static HHOOK g_keyboardHook = NULL;
 static wchar_t logBuffer[4096] = L""; 
 static BOOL g_lockdownActive = FALSE;
+extern LONG g_armed ;
 static HDEVNOTIFY g_hDevNotify = NULL;
 
 // Whitelist structure
@@ -28,11 +29,15 @@ typedef struct {
     WCHAR description[128];
 } WhitelistEntry;
 
-// Add your trusted devices here
+// Add your trusted devices here for now 
 WhitelistEntry g_whitelist[] = {
     {0x046D, 0xC52B, L"Logitech Mouse"},
-    {0x13FE, 0x4300, L"Moster USB"},
+    {0x13FE, 0x4300, L"Moster USB"}, //ALL EXAMPLES 
     {0x0781, 0x5583, L"SanDisk USB Drive"},
+};
+
+WhitelistEntry g_keyDevice[] = {
+    {0x13FE, 0x4300, L"Monster USB"},
 };
 
 #define WHITELIST_SIZE (sizeof(g_whitelist) / sizeof(WhitelistEntry))
@@ -73,9 +78,11 @@ void CursorToCenter() {
 }
 
 // Extract VID and PID from device path
-BOOL GetDeviceVIDPID(WCHAR* devicePath, WORD* vid, WORD* pid) {
-    WCHAR* vidPos = wcsstr(devicePath, L"VID_");
-    WCHAR* pidPos = wcsstr(devicePath, L"PID_");
+BOOL GetDeviceVIDPID(LPCWSTR  devicePath, WORD* vid, WORD* pid) {
+    if (!devicePath || !vid || !pid) return FALSE;
+    
+    LPCWSTR vidPos = wcsstr(devicePath, L"VID_");
+    LPCWSTR pidPos = wcsstr(devicePath, L"PID_");
     
     if (vidPos && pidPos) {
         *vid = (WORD)wcstol(vidPos + 4, NULL, 16);
@@ -91,6 +98,17 @@ BOOL IsDeviceWhitelisted(WORD vid, WORD pid) {
         if (g_whitelist[i].vendorId == vid && g_whitelist[i].productId == pid) {
             AddLog(L"[OK] Authorized device: %ws (VID:0x%04X PID:0x%04X)\n", 
                    g_whitelist[i].description, vid, pid);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+BOOL IsKeyDevice(WORD vid, WORD pid) {
+    for (int i = 0; i < sizeof(g_keyDevice) / sizeof(WhitelistEntry); i++) {
+        if (g_keyDevice[i].vendorId == vid && g_keyDevice[i].productId == pid) {
+            AddLog(L"[KEY] Key device detected: %ws (VID:0x%04X PID:0x%04X)\n", 
+                   g_keyDevice[i].description, vid, pid);
             return TRUE;
         }
     }
@@ -218,7 +236,7 @@ void ActivateLockdown() {
     
 }
 
-void HandleUnauthorizedDevice(WCHAR* devicePath, WORD vid, WORD pid) {
+void HandleUnauthorizedDevice(LPCWSTR devicePath, WORD vid, WORD pid) {
     AddLog(L"\n[ALERT] UNAUTHORIZED DEVICE!\n");
     AddLog(L"Device Path: %ws\n", devicePath);
     AddLog(L"VID: 0x%04X, PID: 0x%04X\n", vid, pid);
@@ -229,10 +247,10 @@ void HandleUnauthorizedDevice(WCHAR* devicePath, WORD vid, WORD pid) {
     ActivateLockdown();
 }
 
-void ProcessNewDevice(WCHAR* devicePath) {
+void HandleDeviceArrival(LPCWSTR devicePath) {
     WORD vid = 0, pid = 0;
     
-    AddLog(L"\n[DETECT] New USB device connected\n");
+    AddLog(L"\n[INFO] New USB device connected\n");
     
     if (!GetDeviceVIDPID(devicePath, &vid, &pid)) {
         AddLog(L"[WARN] Could not extract VID/PID\n");
@@ -243,6 +261,29 @@ void ProcessNewDevice(WCHAR* devicePath) {
     
     if (!IsDeviceWhitelisted(vid, pid)) {
         HandleUnauthorizedDevice(devicePath, vid, pid);
+    }
+
+    if (IsKeyDevice(vid, pid) && InterlockedCompareExchange(&g_armed, 1, 0) == 0) {
+
+        MessageBox(NULL, L"Key device is connected!", L"Armed", MB_OK );
+    }
+}
+
+void HandleDeviceRemoval(LPCWSTR devicePath)
+{
+    WORD vid = 0, pid = 0;
+    if (!GetDeviceVIDPID(devicePath, &vid, &pid)) {
+        AddLog(L"[WARN] Could not extract VID/PID on removal\n");
+        return;
+    }
+
+    AddLog(L"[INFO] Device removed VID:0x%04X PID:0x%04X\n", vid, pid);
+
+    if (IsKeyDevice(vid, pid)) {
+        // perform lockdown regardless of current g_armed state
+        ActivateLockdown();
+        // reset g_armed
+        //InterlockedExchange(&g_armed, 0);
     }
 }
 
@@ -271,19 +312,39 @@ BOOL Shutdown(BOOL reboot) {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg){
+    switch (msg) {
         case WM_DEVICECHANGE:
-            if (wParam == DBT_DEVICEARRIVAL) {
-                PDEV_BROADCAST_HDR pHdr = (PDEV_BROADCAST_HDR)lParam;
-                
-                if (pHdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
-                    PDEV_BROADCAST_DEVICEINTERFACE pDevInf = 
-                        (PDEV_BROADCAST_DEVICEINTERFACE)pHdr;
-                    ProcessNewDevice(pDevInf->dbcc_name);
+        {
+            // protect against NULL lParam
+            if (lParam == 0)
+                break;
+
+            PDEV_BROADCAST_HDR pHdr = (PDEV_BROADCAST_HDR)lParam;
+            if (pHdr->dbch_devicetype != DBT_DEVTYP_DEVICEINTERFACE)
+                break;
+
+            PDEV_BROADCAST_DEVICEINTERFACE pDevInf = (PDEV_BROADCAST_DEVICEINTERFACE)pHdr;
+            LPCWSTR devicePath = pDevInf->dbcc_name;
+
+            switch (wParam)
+            {
+            case DBT_DEVICEARRIVAL:
+                HandleDeviceArrival(devicePath);
+                break;
+
+            case DBT_DEVICEREMOVECOMPLETE:
+                // optionally check a guard (g_armed) but still parse VID/PID inside helper
+                if (g_armed)
+                {
+                    HandleDeviceRemoval(devicePath);
                 }
+                break;
+
+            default:
+                break;
             }
-            break;
-            
+        }
+
         case WM_PAINT:
         {
             PAINTSTRUCT ps;
@@ -316,7 +377,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         default:
             return DefWindowProc(hwnd, msg, wParam, lParam);
-    }
+        }
     return 0;
 }
 
@@ -350,10 +411,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         return 1;
     }
 
-    //AddLog(L"USB Security Monitor Active\n");
     AddLog(L"Monitoring %d whitelisted devices...\n\n", WHITELIST_SIZE);
 
-    // Don't show window or activate hooks until unauthorized device is detected
     // ShowWindow(g_hwnd, SW_HIDE);
     
     MSG msg;
