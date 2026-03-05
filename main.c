@@ -14,13 +14,17 @@
 #define CM_DEVCAP_EJECTIONSUPPORTED 0x00000020
 #endif
 
+#define WHITELIST_FILE L"whitelist.cfg"
+#define MAX_ENTRIES    256
+
 static HWND g_hwnd = NULL;
 static HHOOK g_mouseHook = NULL;
 static HHOOK g_keyboardHook = NULL;
 static wchar_t logBuffer[4096] = L""; 
 static BOOL g_lockdownActive = FALSE;
-extern LONG g_armed ;
+LONG g_armed ;
 static HDEVNOTIFY g_hDevNotify = NULL;
+
 
 // Whitelist structure
 typedef struct {
@@ -29,18 +33,14 @@ typedef struct {
     WCHAR description[128];
 } WhitelistEntry;
 
-// Add your trusted devices here for now 
-WhitelistEntry g_whitelist[] = {
-    {0x046D, 0xC52B, L"Logitech Mouse"},
-    {0x13FE, 0x4300, L"Moster USB"}, //ALL EXAMPLES 
-    {0x0781, 0x5583, L"SanDisk USB Drive"},
-};
+WhitelistEntry *g_whitelist = NULL;
+DWORD g_whitelistCount     = 0;
 
 WhitelistEntry g_keyDevice[] = {
     {0x13FE, 0x4300, L"Monster USB"},
 };
 
-#define WHITELIST_SIZE (sizeof(g_whitelist) / sizeof(WhitelistEntry))
+#define WHITELIST_SIZE (g_whitelistCount)
 
 void AddLog(const wchar_t *fmt, ...) {
     wchar_t buffer[512];
@@ -94,7 +94,7 @@ BOOL GetDeviceVIDPID(LPCWSTR  devicePath, WORD* vid, WORD* pid) {
 
 // Check if device is whitelisted
 BOOL IsDeviceWhitelisted(WORD vid, WORD pid) {
-    for (int i = 0; i < WHITELIST_SIZE; i++) {
+    for (int i = 0; i < g_whitelistCount; i++) {
         if (g_whitelist[i].vendorId == vid && g_whitelist[i].productId == pid) {
             AddLog(L"[OK] Authorized device: %ws (VID:0x%04X PID:0x%04X)\n", 
                    g_whitelist[i].description, vid, pid);
@@ -287,6 +287,52 @@ void HandleDeviceRemoval(LPCWSTR devicePath)
     }
 }
 
+WhitelistEntry *LoadWhitelist(DWORD *outCount) {
+    FILE *f = _wfopen(WHITELIST_FILE, L"r, ccs=UTF-8");
+    if (!f) return NULL;
+
+    WhitelistEntry *entries = malloc(MAX_ENTRIES * sizeof(WhitelistEntry));
+    if (!entries) { fclose(f); return NULL; }
+
+    DWORD count = 0;
+    WCHAR line[256];
+
+    while (fgetws(line, 256, f) && count < MAX_ENTRIES) {
+        // Skip comments and blank lines
+        if (line[0] == L'#' || line[0] == L'\n' || line[0] == L'\r')
+            continue;
+
+        WCHAR desc[128] = {0};
+        UINT vid = 0, pid = 0;
+
+        // Parse "XXXX,XXXX,Description text"
+        if (swscanf_s(line, L"%X,%X,%127[^\n]", &vid, &pid, desc, (unsigned)_countof(desc)) == 3) {
+            entries[count].vendorId   = (WORD)vid;
+            entries[count].productId  = (WORD)pid;
+            wcsncpy_s(entries[count].description, 128, desc, _TRUNCATE);
+            count++;
+        }
+    }
+
+    fclose(f);
+    *outCount = count;
+    return entries;
+}
+
+BOOL EnsureWhitelistFile(void) {
+    FILE *f = _wfopen(WHITELIST_FILE, L"rb");
+    if (f) { fclose(f); return TRUE; }
+
+    // Create it with a comment header so the format is self-documenti
+    f = _wfopen(WHITELIST_FILE, L"w, ccs=UTF-8");
+    if (f) {
+        fwprintf(f, L"# USB Whitelist — VendorID,ProductID,Description\n");
+        fwprintf(f, L"# Example: 046D,C52B,Logitech Mouse\n");
+        fclose(f);
+    }
+    return FALSE;
+}
+
 BOOL Shutdown(BOOL reboot) {
     HANDLE hToken;
     TOKEN_PRIVILEGES tkp;
@@ -365,6 +411,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (g_mouseHook) UnhookWindowsHookEx(g_mouseHook);
                 if (g_keyboardHook) UnhookWindowsHookEx(g_keyboardHook);
                 if (g_hDevNotify) UnregisterDeviceNotification(g_hDevNotify);
+                free(g_whitelist);
                 PostQuitMessage(0);
             }
             break;
@@ -382,6 +429,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow) {
+    BOOL existed = EnsureWhitelistFile();
+    if (!existed) {
+        AddLog(L"[INFO] No whitelist found — created empty %ws\n", WHITELIST_FILE); // Will be a toast notification in the future
+    }
+    g_whitelist = LoadWhitelist(&g_whitelistCount);
+
+    if (!g_whitelist) {
+        // File exists but is empty or only has comments — allocate a zero-size sentinel
+        g_whitelistCount = 0;
+        g_whitelist      = malloc(0);   // non-NULL so free() is always safe (Okey claude code)
+        AddLog(L"[WARN] Whitelist is empty\n");
+    }
+
     WNDCLASS wc = { 0 };
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
@@ -403,8 +463,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
     notificationFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     notificationFilter.dbcc_classguid = GUID_DEVINTERFACE_USB_DEVICE;
     
-    g_hDevNotify = RegisterDeviceNotification(g_hwnd, &notificationFilter,
-                                             DEVICE_NOTIFY_WINDOW_HANDLE);
+    g_hDevNotify = RegisterDeviceNotification(g_hwnd, &notificationFilter, DEVICE_NOTIFY_WINDOW_HANDLE);
     
     if (!g_hDevNotify) {
         MessageBox(NULL, L"Failed to register device notification!", L"Error", MB_OK);
