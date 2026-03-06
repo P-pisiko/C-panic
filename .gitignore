@@ -3,3 +3,5 @@ eject.c
 *.old
 /builds
 /tests
+whitelist.cfg
+*.txt
