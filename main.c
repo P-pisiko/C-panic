@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <io.h>
 
+#include "toast.h"
+
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
 #pragma comment(lib, "user32.lib")
@@ -106,7 +108,7 @@ BOOL GetDeviceVIDPID(LPCWSTR  devicePath, WORD* vid, WORD* pid) {
 
 // Check if device is whitelisted
 BOOL IsDeviceWhitelisted(WORD vid, WORD pid) {
-    for (int i = 0; i < g_whitelistCount; i++) {
+    for (DWORD i = 0; i < g_whitelistCount; i++) {
         if (g_whitelist[i].vendorId == vid && g_whitelist[i].productId == pid) {
             AddLog(L"[OK] Authorized device: %ws (VID:0x%04X PID:0x%04X)\n", 
                    g_whitelist[i].description, vid, pid);
@@ -297,7 +299,7 @@ void HandleDeviceArrival(LPCWSTR devicePath) {
 
     if (IsKeyDevice(vid, pid) && InterlockedCompareExchange(&g_armed, 1, 0) == 0) {
 
-        MessageBox(NULL, L"Key device is connected!", L"Armed", MB_OK );
+        sendToastAsync(L"C Panic", L"Key device connected!");
     }
 }
 
@@ -312,10 +314,7 @@ void HandleDeviceRemoval(LPCWSTR devicePath)
     AddLog(L"[INFO] Device removed VID:0x%04X PID:0x%04X\n", vid, pid);
 
     if (IsKeyDevice(vid, pid)) {
-        // perform lockdown regardless of current g_armed state
         ActivateLockdown();
-        // reset g_armed
-        //InterlockedExchange(&g_armed, 0);
     }
 }
 
@@ -341,7 +340,7 @@ BOOL LoadWhitelist(
         if (line[0] == L'#' || line[0] == L'\n' || line[0] == L'\r')
             continue;
 
-        // Detect section headers
+        
         if (wcsncmp(line, L"[whitelist]", 11) == 0) {
             currentSection = SECTION_WHITELIST;
             continue;
@@ -389,6 +388,7 @@ BOOL EnsureWhitelistFile(void) {
     if (f) {
         fwprintf(f, L"# USB Whitelist Config File — VendorID,ProductID,Description\n");
         fwprintf(f, L"# Sections: [whitelist] for allowed devices, [keydevice] for lockdown triggers\n");
+        fwprintf(f, L"# Key devices must also be in the whitelist section!\n");
         fwprintf(f, L"# Example: 046D,C52B,Logitech Mouse\n\n");
         fwprintf(f, L"[whitelist]\n\n");
         fwprintf(f, L"\n[keydevice]\n\n");
@@ -443,7 +443,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 break;
 
             case DBT_DEVICEREMOVECOMPLETE:
-                // optionally check a guard (g_armed) but still parse VID/PID inside helper
+                // optionally check a guard (g_armed)
                 HandleDeviceRemoval(devicePath);
                 break;
 
@@ -492,7 +492,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return 0;
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow) {
+int WINAPI main(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow) {
 
     int argc;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -519,12 +519,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
     BOOL existed = EnsureWhitelistFile();
     if (!existed) {
         AddLog(L"[INFO] No whitelist found — created empty %ws\n", WHITELIST_FILE); // Will be a toast notification in the future
+        sendToastAsync(L"C Panic", L"No whitelist found — created empty whitelist.cfg");
     }
     
     if (!LoadWhitelist(&g_whitelist, &g_whitelistCount, &g_keyDevice, &g_keyDeviceCount)) {
-        g_whitelistCount = 0;  g_whitelist = malloc(0);
-        g_keyDeviceCount = 0;  g_keyDevice = malloc(0);
+        g_whitelistCount = 0;  g_whitelist = NULL;
+        g_keyDeviceCount = 0;  g_keyDevice = NULL;
         AddLog(L"[WARN] Whitelist is empty\n");
+        sendToastAsync(L"C Panic", L"Failed to load/empty whitelist");
     }
 
     AddLog(L"[INFO] Loaded %d whitelist + %d key device entries\n", g_whitelistCount, g_keyDeviceCount);
