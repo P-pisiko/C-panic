@@ -20,5 +20,8 @@ C Panic - USBGuard 'Clone' for windows
 ```
 ---
 
+## Note: 
+if you double click to run the application you need to use Task Manager to close it. This will be fixed when system tray icon is implemented.
+
 ### Building:
 gcc .\main.c .\toast.c -municode -DUNICODE -D_UNICODE  -luser32 -lgdi32 -lsetupapi -lcfgmgr32 -Wextra
