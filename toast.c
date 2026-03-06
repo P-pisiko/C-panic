@@ -22,7 +22,8 @@ static unsigned int WINAPI ToastThread(void* param) {
         L"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('C Panic').Show($toast)\"",
         p->title, p->message);
 
-    STARTUPINFOW si = { sizeof(si) };
+    STARTUPINFOW si = {0};
+    si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi = {0};
