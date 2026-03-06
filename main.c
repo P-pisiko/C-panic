@@ -46,7 +46,6 @@ DWORD g_whitelistCount     = 0;
 WhitelistEntry *g_keyDevice  = NULL;
 DWORD g_keyDeviceCount       = 0;
 
-
 #define WHITELIST_SIZE (g_whitelistCount)
 
 void AddLog(const wchar_t *fmt, ...) {
@@ -530,7 +529,10 @@ int wmain(int argc, wchar_t* argv[]) {
         }
         else if (wcscmp(argv[1], L"--edit") == 0 || wcscmp(argv[1], L"-e") == 0) {
             EnsureWhitelistFile();
-            ShellExecuteW(NULL, L"open", WHITELIST_FILE, NULL, NULL, SW_SHOW);
+            HINSTANCE result = ShellExecuteW(NULL, L"open", WHITELIST_FILE, NULL, NULL, SW_SHOW);
+            if ((INT_PTR)result <= 32) {
+                ShellExecuteW(NULL, L"open", L"notepad.exe", WHITELIST_FILE, NULL, SW_SHOW);
+            }
             return 0;
         }
         else if (wcscmp(argv[1], L"--list") == 0 || wcscmp(argv[1], L"-l") == 0) {
