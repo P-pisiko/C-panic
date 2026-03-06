@@ -5,6 +5,8 @@
 #include <usbiodef.h>
 #include <stdio.h>
 #include <dbt.h>
+#include <fcntl.h>
+#include <io.h>
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
@@ -49,8 +51,14 @@ void AddLog(const wchar_t *fmt, ...) {
     vswprintf(buffer, 512, fmt, args);
     va_end(args);
 
-    wcscat(logBuffer, buffer);
-    InvalidateRect(g_hwnd, NULL, TRUE);
+    if (g_hwnd) {
+        wcscat(logBuffer, buffer);
+        InvalidateRect(g_hwnd, NULL, TRUE);
+    } else {
+        // --list mode: no window yet, print directly
+        _setmode(_fileno(stdout), _O_U16TEXT); // ensure UTF-16 console output
+        wprintf(L"%ws", buffer);
+    }
 }
 
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -80,9 +88,13 @@ void CursorToCenter() {
 // Extract VID and PID from device path
 BOOL GetDeviceVIDPID(LPCWSTR  devicePath, WORD* vid, WORD* pid) {
     if (!devicePath || !vid || !pid) return FALSE;
-    
-    LPCWSTR vidPos = wcsstr(devicePath, L"VID_");
-    LPCWSTR pidPos = wcsstr(devicePath, L"PID_");
+
+    WCHAR lowerPath[512];
+    wcsncpy_s(lowerPath, 512, devicePath, _TRUNCATE);
+    _wcslwr_s(lowerPath, 512);
+
+    LPCWSTR vidPos = wcsstr(lowerPath, L"vid_");
+    LPCWSTR pidPos = wcsstr(lowerPath, L"pid_");
     
     if (vidPos && pidPos) {
         *vid = (WORD)wcstol(vidPos + 4, NULL, 16);
@@ -181,37 +193,57 @@ BOOL EjectDevice(DEVINST devInst) {
 }
 
 DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
-    HDEVINFO deviceInfoSet;
-    SP_DEVINFO_DATA deviceInfoData;
-    DWORD i;
-    
-    // Get all USB devices
-    deviceInfoSet = SetupDiGetClassDevs(&GUID_DEVINTERFACE_USB_DEVICE,
+    HDEVINFO deviceInfoSet = SetupDiGetClassDevs( //Gett all USB devices 
+        &GUID_DEVINTERFACE_USB_DEVICE,
         NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    
+
     if (deviceInfoSet == INVALID_HANDLE_VALUE) {
         AddLog(L"Failed to get device information set\n");
         return FALSE;
     }
-    
-    deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
 
-    for (i = 0; SetupDiEnumDeviceInfo(deviceInfoSet, i, &deviceInfoData); i++) { // information about that device
-        WCHAR deviceDesc[256];
-        DWORD dataType;
-        WCHAR devicePath[256];
+    SP_DEVICE_INTERFACE_DATA ifaceData = { .cbSize = sizeof(SP_DEVICE_INTERFACE_DATA) };
 
-        if (SetupDiGetDeviceRegistryProperty(deviceInfoSet, &deviceInfoData,
-            SPDRP_DEVICEDESC, &dataType, (BYTE*)deviceDesc, 
-            sizeof(deviceDesc), NULL)) {
+    for (DWORD i = 0; SetupDiEnumDeviceInterfaces(deviceInfoSet, NULL,
+             &GUID_DEVINTERFACE_USB_DEVICE, i, &ifaceData); i++)
+    {
+        // First call: get required buffer size
+        DWORD requiredSize = 0;
+        SetupDiGetDeviceInterfaceDetail(deviceInfoSet, &ifaceData, NULL, 0, &requiredSize, NULL);
 
-            AddLog(L"[Device %d] %ws\n", i + 1, deviceDesc);
+        SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_W *) malloc(requiredSize);
+        if (!detail) continue;
 
-            EjectDevice(deviceInfoData.DevInst);
+        detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+
+        SP_DEVINFO_DATA devInfoData = { .cbSize = sizeof(SP_DEVINFO_DATA) };
+
+        // Second call: get path AND devInfoData in one shot
+        if (!SetupDiGetDeviceInterfaceDetail(deviceInfoSet, &ifaceData, detail, requiredSize, NULL, &devInfoData))
+        {
+            free(detail);
+            continue;
         }
+
+        WORD vid = 0, pid = 0;
+        GetDeviceVIDPID(detail->DevicePath, &vid, &pid);
+
+        WCHAR desc[256] = L"(unknown)";
+        DWORD dataType;
+        SetupDiGetDeviceRegistryPropertyW(deviceInfoSet, &devInfoData,
+            SPDRP_DEVICEDESC, &dataType,
+            (BYTE *)desc, sizeof(desc), NULL);
+
+        AddLog(L"[Device %d] %ws (VID:0x%04X PID:0x%04X)\n", i + 1, desc, vid, pid);
+
+        if (g_lockdownActive)
+            EjectDevice(devInfoData.DevInst);
+
+        free(detail);
     }
-    
-    SetupDiDestroyDeviceInfoList(deviceInfoSet); //Long ass function name
+
+    SetupDiDestroyDeviceInfoList(deviceInfoSet);
+    return TRUE;
 }
 
 void ActivateLockdown() {
@@ -412,16 +444,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             case DBT_DEVICEREMOVECOMPLETE:
                 // optionally check a guard (g_armed) but still parse VID/PID inside helper
-                if (g_armed)
-                {
-                    HandleDeviceRemoval(devicePath);
-                }
+                HandleDeviceRemoval(devicePath);
                 break;
 
             default:
                 break;
             }
         }
+        break;
+        
 
         case WM_PAINT:
         {
@@ -462,6 +493,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow) {
+
+    int argc;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv && argc > 1) {
+        if (wcscmp(argv[1], L"--help") == 0 || wcscmp(argv[1], L"-h") == 0 ) {
+            AddLog(L"C Panic - USBGuard 'Clone' for windows\n\n");
+            AddLog(L"--help, -h      Show this help message\n");
+            AddLog(L"--edit, -e      Open the whitelist file for editing\n");
+            AddLog(L"--list, -l      List currently plugged USB devices\n");
+            LocalFree(argv);
+            return 0;
+        }
+        else if (wcscmp(argv[1], L"--edit") == 0 || wcscmp(argv[1], L"-e") == 0) {
+            EnsureWhitelistFile();
+            ShellExecute(NULL, L"open", WHITELIST_FILE, NULL, NULL, SW_SHOW);
+            return 0;
+        }
+        else if (wcscmp(argv[1], L"--list") == 0 || wcscmp(argv[1], L"-l") == 0) {
+            EnumerateUSBDevices(NULL);
+            return 0;
+        }
+    }
+    
     BOOL existed = EnsureWhitelistFile();
     if (!existed) {
         AddLog(L"[INFO] No whitelist found — created empty %ws\n", WHITELIST_FILE); // Will be a toast notification in the future
@@ -503,9 +557,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdSh
         return 1;
     }
 
-    AddLog(L"Monitoring %d whitelisted devices...\n\n", WHITELIST_SIZE);
-
-    // ShowWindow(g_hwnd, SW_HIDE);
+    ShowWindow(g_hwnd, SW_HIDE);
     
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
