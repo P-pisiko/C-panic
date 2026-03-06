@@ -34,7 +34,6 @@ static HDEVNOTIFY g_hDevNotify = NULL;
 
 typedef enum { SECTION_NONE, SECTION_WHITELIST, SECTION_KEYDEVICE } Section;
 
-// Whitelist structure
 typedef struct {
     WORD vendorId;
     WORD productId;
@@ -121,7 +120,6 @@ BOOL GetDeviceVIDPID(LPCWSTR  devicePath, WORD* vid, WORD* pid) {
     return FALSE;
 }
 
-// Check if device is whitelisted
 BOOL IsDeviceWhitelisted(WORD vid, WORD pid) {
     for (DWORD i = 0; i < g_whitelistCount; i++) {
         if (g_whitelist[i].vendorId == vid && g_whitelist[i].productId == pid) {
@@ -314,11 +312,10 @@ void HandleUnauthorizedDevice(LPCWSTR devicePath, WORD vid, WORD pid) {
     AddLog(L"Device Path: %ws\n", devicePath);
     AddLog(L"VID: 0x%04X, PID: 0x%04X\n", vid, pid);
 
-    Sleep(200);
+    Sleep(175);
     EnumerateUSBDevices(NULL);
-    
     ActivateLockdown();
-    Shutdown(FALSE); // Force shutdown, no reboot
+    //Shutdown(FALSE); // Force shutdown, no reboot
 }
 
 void HandleDeviceArrival(LPCWSTR devicePath) {
@@ -541,8 +538,8 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
     
-    BOOL existed = EnsureWhitelistFile();
-    if (!existed) {
+    
+    if (!EnsureWhitelistFile()) {
         AddLog(L"[INFO] No whitelist found — created empty %ws\n", WHITELIST_FILE); // Will be a toast notification in the future
         sendToastAsync(L"C Panic", L"No whitelist found — created empty whitelist.cfg");
     }
@@ -551,7 +548,7 @@ int wmain(int argc, wchar_t* argv[]) {
         g_whitelistCount = 0;  g_whitelist = NULL;
         g_keyDeviceCount = 0;  g_keyDevice = NULL;
         AddLog(L"[WARN] Whitelist is empty\n");
-        sendToastAsync(L"C Panic", L"Failed to load/empty whitelist");
+        sendToastAsync(L"C Panic", L"Failed to load");
     }
 
     AddLog(L"[INFO] Loaded %d whitelist + %d key device entries\n", g_whitelistCount, g_keyDeviceCount);
@@ -580,7 +577,7 @@ int wmain(int argc, wchar_t* argv[]) {
     g_hDevNotify = RegisterDeviceNotification(g_hwnd, &notificationFilter, DEVICE_NOTIFY_WINDOW_HANDLE);
     
     if (!g_hDevNotify) {
-        MessageBox(NULL, L"Failed to register device notification!", L"Error", MB_OK);
+        MessageBox(NULL, L"Failed to register device notification!", L"Error", MB_OKCANCEL);
         return 1;
     }
 
