@@ -7,12 +7,15 @@
 #include <dbt.h>
 #include <fcntl.h>
 #include <io.h>
+#include <processenv.h>
 
 #include "toast.h"
 
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(linker, "/entry:wmainCRTStartup")
+#pragma comment(linker, "/subsystem:console") 
 
 #ifndef CM_DEVCAP_EJECTIONSUPPORTED
 #define CM_DEVCAP_EJECTIONSUPPORTED 0x00000020
@@ -61,6 +64,19 @@ void AddLog(const wchar_t *fmt, ...) {
         _setmode(_fileno(stdout), _O_U16TEXT); // ensure UTF-16 console output
         wprintf(L"%ws", buffer);
     }
+}
+
+BOOL LaunchedFromConsole() {
+    HWND consoleWnd = GetConsoleWindow();
+    if (!consoleWnd) return FALSE;
+
+    DWORD consoleProcessId;
+    GetWindowThreadProcessId(consoleWnd, &consoleProcessId);
+
+    // If the console's owner PID != our PID, 
+    // we SHARE a console with a parent (terminal that launched us)
+    // If they match, Windows created a NEW console just for us
+    return GetCurrentProcessId() != consoleProcessId;
 }
 
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -127,6 +143,30 @@ BOOL IsKeyDevice(WORD vid, WORD pid) {
         }
     }
     return FALSE;
+}
+
+BOOL Shutdown(BOOL reboot) {
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tkp;
+
+    if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return FALSE;
+
+    LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+
+    tkp.PrivilegeCount = 1;
+    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
+        return FALSE;
+
+    if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, reboot))
+        return FALSE;
+
+    tkp.Privileges[0].Attributes = 0;
+    AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
+
+    return TRUE;
 }
 
 BOOL EjectDevice(DEVINST devInst) {
@@ -279,6 +319,7 @@ void HandleUnauthorizedDevice(LPCWSTR devicePath, WORD vid, WORD pid) {
     EnumerateUSBDevices(NULL);
     
     ActivateLockdown();
+    Shutdown(FALSE); // Force shutdown, no reboot
 }
 
 void HandleDeviceArrival(LPCWSTR devicePath) {
@@ -397,29 +438,6 @@ BOOL EnsureWhitelistFile(void) {
     return FALSE;
 }
 
-BOOL Shutdown(BOOL reboot) {
-    HANDLE hToken;
-    TOKEN_PRIVILEGES tkp;
-
-    if(!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
-        return FALSE;
-
-    LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
-
-    tkp.PrivilegeCount = 1;
-    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-    if(!AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0))
-        return FALSE;
-
-    if(!InitiateSystemShutdown(NULL, NULL, 0, TRUE, reboot))
-        return FALSE;
-
-    tkp.Privileges[0].Attributes = 0;
-    AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES) NULL, 0);
-
-    return TRUE;
-}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -492,22 +510,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return 0;
 }
 
-int WINAPI main(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow) {
+int wmain(int argc, wchar_t* argv[]) {
+    HINSTANCE hInstance = GetModuleHandleW(NULL);
+    BOOL fromConsole = LaunchedFromConsole();
 
-    int argc;
-    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv && argc > 1) {
-        if (wcscmp(argv[1], L"--help") == 0 || wcscmp(argv[1], L"-h") == 0 ) {
-            AddLog(L"C Panic - USBGuard 'Clone' for windows\n\n");
-            AddLog(L"--help, -h      Show this help message\n");
-            AddLog(L"--edit, -e      Open the whitelist file for editing\n");
-            AddLog(L"--list, -l      List currently plugged USB devices\n");
-            LocalFree(argv);
+    if (argc == 1 && fromConsole) {
+        wprintf(L"[INFO] C Panic running in tray. Use tray icon to exit.\n");
+    } else if (argc == 1 && !fromConsole) {
+        FreeConsole();
+    }
+
+    if (argc > 1) {
+        if (wcscmp(argv[1], L"--help") == 0 || wcscmp(argv[1], L"-h") == 0) {
+            wprintf(L"C Panic - USBGuard 'Clone' for windows\n\n");
+            wprintf(L"--help, -h      Show this help message\n");
+            wprintf(L"--edit, -e      Open the whitelist file for editing\n");
+            wprintf(L"--list, -l      List currently plugged USB devices\n");
             return 0;
         }
         else if (wcscmp(argv[1], L"--edit") == 0 || wcscmp(argv[1], L"-e") == 0) {
             EnsureWhitelistFile();
-            ShellExecute(NULL, L"open", WHITELIST_FILE, NULL, NULL, SW_SHOW);
+            ShellExecuteW(NULL, L"open", WHITELIST_FILE, NULL, NULL, SW_SHOW);
             return 0;
         }
         else if (wcscmp(argv[1], L"--list") == 0 || wcscmp(argv[1], L"-l") == 0) {
