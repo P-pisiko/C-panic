@@ -538,7 +538,6 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
     
-    
     if (!EnsureWhitelistFile()) {
         AddLog(L"[INFO] No whitelist found — created empty %ws\n", WHITELIST_FILE); // Will be a toast notification in the future
         sendToastAsync(L"C Panic", L"No whitelist found — created empty whitelist.cfg");
