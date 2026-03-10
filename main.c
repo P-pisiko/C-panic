@@ -369,9 +369,9 @@ BOOL LoadWhitelist(
 
     DWORD wlCount = 0, kdCount = 0;
     Section currentSection = SECTION_NONE;
-    WCHAR line[256];
+    WCHAR line[1024];
 
-    while (fgetws(line, 256, f) &&
+    while (fgetws(line, sizeof(line)/sizeof(line[0]), f) &&
            wlCount < MAX_ENTRIES && kdCount < MAX_ENTRIES) {
 
         // Skip comments and blank lines
@@ -401,7 +401,7 @@ BOOL LoadWhitelist(
             WhitelistEntry entry;
             entry.vendorId  = (WORD)vid;
             entry.productId = (WORD)pid;
-            wcsncpy_s(entry.description, 128, desc, _TRUNCATE);
+            wcsncpy_s(entry.description, sizeof(desc)/sizeof(desc[0]), desc, _TRUNCATE);
 
             if (currentSection == SECTION_WHITELIST)
                 wl[wlCount++] = entry;
@@ -547,6 +547,14 @@ int wmain(int argc, wchar_t* argv[]) {
             EnumerateUSBDevices(NULL);
             return 0;
         }
+        else {
+        wprintf(L"Unknown option: %s\n\n", argv[1]);
+        wprintf(L"C Panic - USBGuard 'Clone' for windows\n\n");
+        wprintf(L"--help, -h      Show this help message\n");
+        wprintf(L"--edit, -e      Open the whitelist file for editing\n");
+        wprintf(L"--list, -l      List currently plugged USB devices\n");
+        return 1;
+    }
     }
     
     if (!EnsureWhitelistFile()) {
