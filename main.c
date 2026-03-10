@@ -9,6 +9,7 @@
 #include <io.h>
 #include <processenv.h>
 
+#include "tray.h"
 #include "toast.h"
 
 #pragma comment(lib, "setupapi.lib")
@@ -24,13 +25,13 @@
 #define WHITELIST_FILE L"whitelist.cfg"
 #define MAX_ENTRIES    256
 
-static HWND g_hwnd = NULL;
-static HHOOK g_mouseHook = NULL;
-static HHOOK g_keyboardHook = NULL;
+HWND g_hwnd = NULL;
+HHOOK g_mouseHook = NULL;
+HHOOK g_keyboardHook = NULL;
 static wchar_t logBuffer[4096] = L""; 
 static BOOL g_lockdownActive = FALSE;
 LONG g_armed ;
-static HDEVNOTIFY g_hDevNotify = NULL;
+HDEVNOTIFY g_hDevNotify = NULL;
 
 typedef enum { SECTION_NONE, SECTION_WHITELIST, SECTION_KEYDEVICE } Section;
 
@@ -466,7 +467,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
         }
         break;
-        
+
+        case WM_TRAYICON:
+            if (lParam == WM_RBUTTONUP) {
+                ShowTrayMenu(hwnd);
+            }
+            break;
+        break;
+        case WM_COMMAND:
+            HandleTrayCommand(hwnd, LOWORD(wParam));
+            break;
+        break;
 
         case WM_PAINT:
         {
@@ -566,6 +577,8 @@ int wmain(int argc, wchar_t* argv[]) {
         0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
         NULL, NULL, hInstance, NULL
     );
+
+    AddTrayIcon(g_hwnd);
 
     // Register for USB device notifications
     DEV_BROADCAST_DEVICEINTERFACE notificationFilter = {0};
