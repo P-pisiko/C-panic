@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <processenv.h>
+#include <strsafe.h>
 
 #include "tray.h"
 #include "toast.h"
@@ -40,6 +41,13 @@ typedef struct {
     WORD productId;
     WCHAR description[128];
 } WhitelistEntry;
+
+typedef struct {
+    BOOL    isTrayCall;          // IN:  controls output mode
+    WCHAR   toastTitle[128];     // OUT: filled by the function
+    WCHAR   toastMessage[2048];  // OUT: accumulated device summary
+    int     deviceCount;         // OUT: how many devices were found
+} USBEnumContext;
 
 WhitelistEntry *g_whitelist = NULL;
 DWORD g_whitelistCount     = 0;
@@ -231,9 +239,34 @@ BOOL EjectDevice(DEVINST devInst) {
         return FALSE;
     }
 }
+static void HelperLogDevice(USBEnumContext *ctx, DWORD index, const WCHAR *desc, WORD vid, WORD pid) {
+    if (!ctx || !ctx->isTrayCall) {
+        AddLog(L"[Device %d] %ws (VID:0x%04X PID:0x%04X)\n", index + 1, desc, vid, pid);
+    } else {
+        StringCchPrintfW(
+            ctx->toastMessage + wcslen(ctx->toastMessage),
+            ARRAYSIZE(ctx->toastMessage) - wcslen(ctx->toastMessage),
+            L"• %ws (VID:%04X PID:%04X)\n", desc, vid, pid);
+    }
+}
+
+static void HelperFinalOutput(USBEnumContext *ctx) {
+    if (!ctx || !ctx->isTrayCall) return;
+
+    StringCchPrintfW(ctx->toastTitle, ARRAYSIZE(ctx->toastTitle),
+        L"USB Devices (%d found)", ctx->deviceCount);
+
+    if (ctx->deviceCount == 0)
+        StringCchCopyW(ctx->toastMessage, ARRAYSIZE(ctx->toastMessage),
+            L"No USB devices connected.");
+
+    sendToastAsync(ctx->toastTitle, ctx->toastMessage);
+}
 
 DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
-    HDEVINFO deviceInfoSet = SetupDiGetClassDevs( //Gett all USB devices 
+    USBEnumContext *ctx = (USBEnumContext *)lp;
+
+    HDEVINFO deviceInfoSet = SetupDiGetClassDevs(
         &GUID_DEVINTERFACE_USB_DEVICE,
         NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
 
@@ -242,25 +275,28 @@ DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
         return FALSE;
     }
 
+    if (ctx && ctx->isTrayCall) {
+        ctx->deviceCount    = 0;
+        ctx->toastMessage[0] = L'\0';
+        ctx->toastTitle[0]   = L'\0';
+    }
+
     SP_DEVICE_INTERFACE_DATA ifaceData = { .cbSize = sizeof(SP_DEVICE_INTERFACE_DATA) };
 
     for (DWORD i = 0; SetupDiEnumDeviceInterfaces(deviceInfoSet, NULL,
              &GUID_DEVINTERFACE_USB_DEVICE, i, &ifaceData); i++)
     {
-        // First call: get required buffer size
         DWORD requiredSize = 0;
         SetupDiGetDeviceInterfaceDetail(deviceInfoSet, &ifaceData, NULL, 0, &requiredSize, NULL);
 
-        SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_W *) malloc(requiredSize);
+        SP_DEVICE_INTERFACE_DETAIL_DATA_W *detail = malloc(requiredSize);
         if (!detail) continue;
 
         detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-
         SP_DEVINFO_DATA devInfoData = { .cbSize = sizeof(SP_DEVINFO_DATA) };
 
-        // Second call: get path AND devInfoData in one shot
-        if (!SetupDiGetDeviceInterfaceDetail(deviceInfoSet, &ifaceData, detail, requiredSize, NULL, &devInfoData))
-        {
+        if (!SetupDiGetDeviceInterfaceDetail(deviceInfoSet, &ifaceData,
+                detail, requiredSize, NULL, &devInfoData)) {
             free(detail);
             continue;
         }
@@ -271,10 +307,10 @@ DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
         WCHAR desc[256] = L"(unknown)";
         DWORD dataType;
         SetupDiGetDeviceRegistryPropertyW(deviceInfoSet, &devInfoData,
-            SPDRP_DEVICEDESC, &dataType,
-            (BYTE *)desc, sizeof(desc), NULL);
+            SPDRP_DEVICEDESC, &dataType, (BYTE *)desc, sizeof(desc), NULL);
 
-        AddLog(L"[Device %d] %ws (VID:0x%04X PID:0x%04X)\n", i + 1, desc, vid, pid);
+        HelperLogDevice(ctx, i, desc, vid, pid);      // clean, explicit
+        if (ctx) ctx->deviceCount++;
 
         if (g_lockdownActive)
             EjectDevice(devInfoData.DevInst);
@@ -283,6 +319,7 @@ DWORD WINAPI EnumerateUSBDevices(LPVOID lp) {
     }
 
     SetupDiDestroyDeviceInfoList(deviceInfoSet);
+    HelperFinalOutput(ctx);   // handles toast or does nothing for CLI
     return TRUE;
 }
 
