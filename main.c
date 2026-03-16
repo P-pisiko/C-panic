@@ -25,6 +25,7 @@
 
 #define WHITELIST_FILE L"whitelist.cfg"
 #define MAX_ENTRIES    256
+BOOL debugBuild = TRUE; //When set to true it disables the forse shutdown producre
 
 HWND g_hwnd = NULL;
 HHOOK g_mouseHook = NULL;
@@ -353,7 +354,11 @@ void HandleUnauthorizedDevice(LPCWSTR devicePath, WORD vid, WORD pid) {
     Sleep(175);
     EnumerateUSBDevices(NULL);
     ActivateLockdown();
-    //Shutdown(FALSE); // Force shutdown, no reboot
+    if (!debugBuild)
+    {
+        Shutdown(FALSE); // Force shutdown
+    }
+    
 }
 
 void HandleDeviceArrival(LPCWSTR devicePath) {
