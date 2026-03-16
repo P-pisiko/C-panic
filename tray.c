@@ -1,5 +1,7 @@
 #include <windows.h>
 #include "tray.h"
+#include "toast.h"
+
 
 void EnsureWhitelistFile(void);
 DWORD WINAPI EnumerateUSBDevices(LPVOID lp);
@@ -9,6 +11,13 @@ typedef struct {
     WORD  productId;
     WCHAR description[128];
 } WhitelistEntry;
+
+typedef struct {
+    BOOL    isTrayCall;          // IN:  controls output mode
+    WCHAR   toastTitle[128];     // OUT: filled by the function
+    WCHAR   toastMessage[2048];  // OUT: accumulated device summary
+    int     deviceCount;         // OUT: how many devices were found
+} USBEnumContext;
 
 extern HHOOK g_mouseHook;
 extern HHOOK g_keyboardHook;
@@ -78,10 +87,18 @@ void HandleTrayCommand(HWND hwnd, WORD cmd) {
             if ((INT_PTR)result <= 32) {
                 ShellExecuteW(NULL, L"open", L"notepad.exe", WHITELIST_FILE, NULL, SW_SHOW);
             }
+            sendToastAsync(L"C Panic",L"Restart required after editing whitelist");
             break;
 
         case ID_TRAY_LIST:
-            EnumerateUSBDevices(NULL);
+            USBEnumContext *ctx = calloc(1, sizeof(USBEnumContext));
+            if (ctx) {
+                ctx->isTrayCall = TRUE;
+                // Thread frees ctx itself — or use CloseHandle + free after join
+                HANDLE hThread = CreateThread(NULL, 0, EnumerateUSBDevices, ctx, 0, NULL);
+                if (hThread) CloseHandle(hThread);
+                else free(ctx);
+            }
             break;
     }
 }
