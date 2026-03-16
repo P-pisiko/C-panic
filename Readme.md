@@ -6,7 +6,7 @@ Core Futures as of NOW:
 - Detecting changes regarding USB devices
 - Config file for registering trusted devices
 - Windows Toast notifications
-- System tray icon for interaction [Coming Soon]
+- System tray icon for interaction
 - Enumurating available USB devices to get information
 
 ## Usage:
@@ -20,8 +20,12 @@ C Panic - USBGuard 'Clone' for windows
 ```
 ---
 
-## Note: 
-if you double click to run the application you need to use Task Manager to close it. This will be fixed when system tray icon is implemented.
+## ToDO: 
+- Add application and system tray icon
+- Find a way to register the program to open on startup
+- Implement re-read of the whitelist file after editing is compleat (saved)
+- Compiler optimization and security flags
+- Try  C/C++ static analiysis ? (cppcheck)
 
 ### Building:
-gcc .\main.c .\toast.c -municode -DUNICODE -D_UNICODE  -luser32 -lgdi32 -lsetupapi -lcfgmgr32 -Wextra
+gcc .\main.c .\toast.c .\tray.c -municode -DUNICODE -D_UNICODE  -luser32 -lgdi32 -lsetupapi -lcfgmgr32 -Wextra
